@@ -34,28 +34,40 @@ def main() -> None:
     metrics = _select_rows(client, "bot_metrics", "ticker,adx,atr,volume_delta,current_regime,score,updated_at", row_limit)
     allocations = _select_rows(client, "portfolio_allocation", "ticker,assigned_stack,is_active,status,reason,updated_at", row_limit)
     runtime_flags = _select_rows(client, "runtime_flags", "flag_name,value_bool,updated_at", row_limit)
+    technical = _select_rows(client, "technical_snapshots", "ticker,price,ts,timeframe", row_limit)
 
     positions_view = [row for row in positions if row.get("status") == "open"] if only_open else positions
+    latest_price = _latest_price_map(technical)
+    realized_pct, unrealized_pct, unrealized_notional = _pnl_summary(positions, latest_price)
     runs_sorted = sorted(bot_runs, key=lambda x: x.get("started_at") or "", reverse=True)
     latest_run = runs_sorted[0] if runs_sorted else None
     last_status = latest_run.get("status", "n/a") if latest_run else "n/a"
     status_badge = _status_badge(last_status)
 
     st.caption(f"Last run status: {status_badge}  |  Updated: {datetime.utcnow().isoformat(timespec='seconds')} UTC")
-    _render_summary(equity, positions_view, orders, runs_sorted)
+    _render_summary(
+        equity=equity,
+        positions=positions_view,
+        orders=orders,
+        bot_runs=runs_sorted,
+        realized_pct=realized_pct,
+        unrealized_pct=unrealized_pct,
+    )
 
-    overview_tab, positions_tab, orders_tab, metrics_tab, allocation_tab, runs_tab = st.tabs(
-        ["Overview", "Positions", "Orders", "Metrics", "Allocation", "Runs"]
+    overview_tab, positions_tab, orders_tab, metrics_tab, allocation_tab, runs_tab, operator_tab = st.tabs(
+        ["Overview", "Positions", "Orders", "Metrics", "Allocation", "Runs", "Operator"]
     )
 
     with overview_tab:
         st.subheader("Equity")
         if equity:
-            st.line_chart([row["equity"] for row in equity])
-            c1, c2, c3 = st.columns(3)
+            chart_data = _equity_series(equity)
+            st.line_chart(chart_data)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Latest Cash", f"{float(equity[-1]['cash_balance']):.2f}")
             c2.metric("Latest Exposure", f"{float(equity[-1]['exposure']):.2f}")
             c3.metric("Latest Equity", f"{float(equity[-1]['equity']):.2f}")
+            c4.metric("Unrealized Notional", f"{unrealized_notional:.2f}")
         else:
             st.info("No equity snapshots yet.")
 
@@ -68,6 +80,7 @@ def main() -> None:
     with positions_tab:
         st.subheader("Positions")
         if positions_view:
+            st.caption(f"Latest realized PnL % (closed): {realized_pct:.2f} | Unrealized PnL % (open): {unrealized_pct:.2f}")
             st.dataframe(positions_view, use_container_width=True)
         else:
             st.info("No positions for the selected filter.")
@@ -103,6 +116,10 @@ def main() -> None:
             st.dataframe(runs_sorted, use_container_width=True)
         else:
             st.info("No run rows yet.")
+
+    with operator_tab:
+        st.subheader("Operator Panel")
+        _render_runtime_flag_operator(client, runtime_flags)
 
 
 def _authenticated() -> bool:
@@ -155,8 +172,15 @@ def _select_rows(client, table: str, fields: str, limit: int):
             return []
 
 
-def _render_summary(equity: list[dict], positions: list[dict], orders: list[dict], bot_runs: list[dict]) -> None:
-    c1, c2, c3, c4 = st.columns(4)
+def _render_summary(
+    equity: list[dict],
+    positions: list[dict],
+    orders: list[dict],
+    bot_runs: list[dict],
+    realized_pct: float,
+    unrealized_pct: float,
+) -> None:
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     latest_equity = equity[-1]["equity"] if equity else 0
     open_positions = len([x for x in positions if x.get("status") == "open"])
     last_status = bot_runs[-1]["status"] if bot_runs else "n/a"
@@ -164,6 +188,8 @@ def _render_summary(equity: list[dict], positions: list[dict], orders: list[dict
     c2.metric("Open Positions", str(open_positions))
     c3.metric("Orders", str(len(orders)))
     c4.metric("Last Run", str(last_status))
+    c5.metric("Closed PnL %", f"{realized_pct:.2f}")
+    c6.metric("Open PnL %", f"{unrealized_pct:.2f}")
 
 
 def _status_badge(status: str) -> str:
@@ -185,6 +211,85 @@ def _render_empty() -> None:
             "timestamp": datetime.utcnow().isoformat(),
         }
     )
+
+
+def _latest_price_map(technical_rows: list[dict]) -> dict[str, float]:
+    latest: dict[str, tuple[str, float]] = {}
+    for row in technical_rows:
+        ticker = row.get("ticker")
+        ts = row.get("ts") or ""
+        price = float(row.get("price") or 0)
+        if not ticker or price <= 0:
+            continue
+        prev = latest.get(ticker)
+        if prev is None or ts > prev[0]:
+            latest[ticker] = (ts, price)
+    return {k: v[1] for k, v in latest.items()}
+
+
+def _pnl_summary(positions: list[dict], latest_price: dict[str, float]) -> tuple[float, float, float]:
+    closed = [row for row in positions if row.get("status") == "closed"]
+    open_rows = [row for row in positions if row.get("status") == "open"]
+
+    realized_values = [float(row.get("realized_pnl_pct") or 0) for row in closed if row.get("realized_pnl_pct") is not None]
+    realized_pct = (sum(realized_values) / len(realized_values)) if realized_values else 0.0
+
+    unrealized_pct_values: list[float] = []
+    unrealized_notional = 0.0
+    for row in open_rows:
+        ticker = row.get("ticker")
+        qty = float(row.get("quantity") or 0)
+        entry = float(row.get("average_entry_price") or 0)
+        if qty <= 0 or entry <= 0 or not ticker:
+            continue
+        mark = latest_price.get(ticker, float(row.get("highest_price") or entry))
+        pct = ((mark - entry) / entry) * 100.0
+        unrealized_pct_values.append(pct)
+        unrealized_notional += (mark - entry) * qty
+
+    unrealized_pct = (sum(unrealized_pct_values) / len(unrealized_pct_values)) if unrealized_pct_values else 0.0
+    return realized_pct, unrealized_pct, unrealized_notional
+
+
+def _equity_series(equity: list[dict]) -> dict[str, list[float]]:
+    return {
+        "equity": [float(row.get("equity") or 0) for row in equity],
+        "cash_balance": [float(row.get("cash_balance") or 0) for row in equity],
+        "exposure": [float(row.get("exposure") or 0) for row in equity],
+    }
+
+
+def _render_runtime_flag_operator(client, runtime_flags: list[dict]) -> None:
+    current = False
+    for row in runtime_flags:
+        if row.get("flag_name") == "paper_trading_enabled":
+            current = bool(row.get("value_bool"))
+            break
+
+    st.write({"paper_trading_enabled": current})
+    allow_mutation = os.getenv("DASHBOARD_ALLOW_FLAG_MUTATION", "false").lower() in {"1", "true", "yes"}
+    if not allow_mutation:
+        st.info("Runtime flag mutation is disabled. Set DASHBOARD_ALLOW_FLAG_MUTATION=true to enable.")
+        return
+
+    target_value = st.toggle("Target paper_trading_enabled", value=current)
+    expected = "ENABLE" if target_value else "DISABLE"
+    confirmation = st.text_input(f'Type "{expected}" to confirm flag update')
+    if st.button("Apply runtime flag change", type="primary"):
+        if confirmation != expected:
+            st.error("Confirmation text mismatch.")
+            return
+        payload = {
+            "flag_name": "paper_trading_enabled",
+            "value_bool": bool(target_value),
+            "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        try:
+            client.table("runtime_flags").upsert(payload, on_conflict="flag_name").execute()
+            st.success("Runtime flag updated.")
+            st.rerun()
+        except Exception as exc:  # pragma: no cover - UI feedback path
+            st.error(f"Failed to update runtime flag: {exc}")
 
 
 if __name__ == "__main__":
