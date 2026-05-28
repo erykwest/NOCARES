@@ -8,7 +8,7 @@ from typing import Any
 
 from nocares.allocation.rules import build_allocation_plan, validate_allocation_plan
 from nocares.config import load_config
-from nocares.domain import CoinMetrics
+from nocares.domain import CoinMetrics, PairOverride
 from nocares.market import BinanceMarketClient, build_coin_metrics, build_technical_snapshot
 from nocares.risk import PaperEngineConfig, execute_paper_cycle
 from nocares.storage import InMemoryPortfolioRepository, SupabasePortfolioRepository
@@ -103,6 +103,12 @@ def main() -> None:
             allocations = {item.ticker: item.stack_size for item in plan.assigned_stacks}
 
         open_positions = repo.fetch_open_positions()
+        pair_overrides = repo.fetch_pair_overrides()
+        allocations = _apply_allocation_overrides(
+            allocations=allocations,
+            open_positions=open_positions,
+            overrides=pair_overrides,
+        )
         snap_map = {item.ticker: item for item in snapshots}
         engine_cfg = PaperEngineConfig(
             total_stack=float(config["portfolio"]["base_stack"]),
@@ -121,6 +127,7 @@ def main() -> None:
             allocations=allocations,
             open_positions=open_positions,
             config=engine_cfg,
+            pair_overrides=pair_overrides,
         )
 
         repo.save_position_legs(result.legs)
@@ -164,6 +171,29 @@ def _build_repository(dry_run: bool):
 def floor_time(ts: datetime, minutes: int) -> datetime:
     minute = (ts.minute // minutes) * minutes
     return ts.replace(minute=minute, second=0, microsecond=0)
+
+
+def _apply_allocation_overrides(
+    *,
+    allocations: dict[str, float],
+    open_positions: list,
+    overrides: dict[str, PairOverride],
+) -> dict[str, float]:
+    output = dict(allocations)
+    open_tickers = {row.ticker for row in open_positions if row.status == "open"}
+
+    for ticker, override in overrides.items():
+        if not override.enabled:
+            continue
+
+        if override.assigned_stack_override is not None and override.assigned_stack_override > 0:
+            output[ticker] = float(override.assigned_stack_override)
+
+        if override.block_new_entries and ticker not in open_tickers:
+            output[ticker] = 0.0
+
+    # Keep only positive allocations.
+    return {k: v for k, v in output.items() if v > 0}
 
 
 if __name__ == "__main__":

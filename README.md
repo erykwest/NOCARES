@@ -49,6 +49,13 @@ $env:PYTHONPATH = "$PWD\src"
 py -m nocares.bot.rebalance --mode deterministic --once --dry-run --mock
 ```
 
+Per abilitare controlli operativi dashboard:
+
+```powershell
+$env:DASHBOARD_ALLOW_FLAG_MUTATION = "true"
+$env:DASHBOARD_ALLOW_OVERRIDE_MUTATION = "true"
+```
+
 ## Nota di sicurezza
 
 Il progetto riguarda automazione e trading. Prima di qualunque integrazione reale servono paper trading, limiti di rischio, audit dei log e controllo manuale sulle decisioni LLM. Non usare chiavi con privilegi eccessivi nei primi test.

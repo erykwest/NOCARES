@@ -17,6 +17,7 @@ def main() -> None:
         st.header("Controls")
         row_limit = st.slider("Rows per table", min_value=20, max_value=300, value=100, step=20)
         only_open = st.checkbox("Only open positions", value=True)
+        pair_query = st.query_params.get("pair", "")
         manual_refresh = st.button("Refresh now")
         if manual_refresh:
             st.rerun()
@@ -35,6 +36,19 @@ def main() -> None:
     allocations = _select_rows(client, "portfolio_allocation", "ticker,assigned_stack,is_active,status,reason,updated_at", row_limit)
     runtime_flags = _select_rows(client, "runtime_flags", "flag_name,value_bool,updated_at", row_limit)
     technical = _select_rows(client, "technical_snapshots", "ticker,price,ts,timeframe", row_limit)
+    pair_overrides = _select_rows(
+        client,
+        "pair_overrides",
+        "ticker,enabled,block_new_entries,force_close,assigned_stack_override,tranche1_pct,tranche2_pct,tranche3_pct,initial_stop_atr_multiple,trail_stop_atr_multiple,max_stale_position_hours,notes,updated_at",
+        row_limit,
+    )
+
+    pair_choices = _pair_choices(positions, metrics, allocations, technical, pair_overrides)
+    selected_pair = pair_choices[0] if pair_choices else ""
+    if pair_choices:
+        selected_pair = pair_query if pair_query in pair_choices else selected_pair
+        selected_pair = st.sidebar.selectbox("Pair page", options=pair_choices, index=pair_choices.index(selected_pair))
+        st.query_params["pair"] = selected_pair
 
     positions_view = [row for row in positions if row.get("status") == "open"] if only_open else positions
     latest_price = _latest_price_map(technical)
@@ -54,8 +68,8 @@ def main() -> None:
         unrealized_pct=unrealized_pct,
     )
 
-    overview_tab, positions_tab, orders_tab, metrics_tab, allocation_tab, runs_tab, operator_tab = st.tabs(
-        ["Overview", "Positions", "Orders", "Metrics", "Allocation", "Runs", "Operator"]
+    overview_tab, positions_tab, orders_tab, metrics_tab, allocation_tab, runs_tab, pair_tab, operator_tab = st.tabs(
+        ["Overview", "Positions", "Orders", "Metrics", "Allocation", "Runs", "Pair", "Operator"]
     )
 
     with overview_tab:
@@ -116,6 +130,19 @@ def main() -> None:
             st.dataframe(runs_sorted, use_container_width=True)
         else:
             st.info("No run rows yet.")
+
+    with pair_tab:
+        st.subheader("Pair Detail")
+        _render_pair_page(
+            client=client,
+            selected_pair=selected_pair,
+            positions=positions,
+            orders=orders,
+            metrics=metrics,
+            allocations=allocations,
+            technical=technical,
+            pair_overrides=pair_overrides,
+        )
 
     with operator_tab:
         st.subheader("Operator Panel")
@@ -290,6 +317,132 @@ def _render_runtime_flag_operator(client, runtime_flags: list[dict]) -> None:
             st.rerun()
         except Exception as exc:  # pragma: no cover - UI feedback path
             st.error(f"Failed to update runtime flag: {exc}")
+
+
+def _pair_choices(
+    positions: list[dict],
+    metrics: list[dict],
+    allocations: list[dict],
+    technical: list[dict],
+    pair_overrides: list[dict],
+) -> list[str]:
+    values: set[str] = set()
+    for row in positions + metrics + allocations + technical + pair_overrides:
+        ticker = row.get("ticker")
+        if ticker:
+            values.add(str(ticker))
+    return sorted(values)
+
+
+def _render_pair_page(
+    *,
+    client,
+    selected_pair: str,
+    positions: list[dict],
+    orders: list[dict],
+    metrics: list[dict],
+    allocations: list[dict],
+    technical: list[dict],
+    pair_overrides: list[dict],
+) -> None:
+    if not selected_pair:
+        st.info("No pairs available yet.")
+        return
+
+    st.write({"pair": selected_pair})
+    pair_positions = [row for row in positions if row.get("ticker") == selected_pair]
+    pair_orders = [row for row in orders if row.get("ticker") == selected_pair]
+    pair_metrics = [row for row in metrics if row.get("ticker") == selected_pair]
+    pair_alloc = [row for row in allocations if row.get("ticker") == selected_pair]
+    pair_tech = [row for row in technical if row.get("ticker") == selected_pair]
+    pair_override = next((row for row in pair_overrides if row.get("ticker") == selected_pair), None)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Positions Rows", str(len(pair_positions)))
+    c2.metric("Orders Rows", str(len(pair_orders)))
+    c3.metric("Metrics Rows", str(len(pair_metrics)))
+
+    st.subheader("Pair Snapshot")
+    left, right = st.columns(2)
+    with left:
+        st.dataframe(pair_metrics if pair_metrics else [], use_container_width=True)
+    with right:
+        st.dataframe(pair_alloc if pair_alloc else [], use_container_width=True)
+
+    st.subheader("Pair Orders and Positions")
+    st.dataframe(pair_orders if pair_orders else [], use_container_width=True)
+    st.dataframe(pair_positions if pair_positions else [], use_container_width=True)
+    st.dataframe(pair_tech if pair_tech else [], use_container_width=True)
+
+    st.subheader("Strategy + Money Management Override")
+    allow_override_mutation = os.getenv("DASHBOARD_ALLOW_OVERRIDE_MUTATION", "false").lower() in {"1", "true", "yes"}
+    defaults = _pair_override_defaults(pair_override)
+    with st.form(f"override-form-{selected_pair}", clear_on_submit=False):
+        enabled = st.checkbox("enabled", value=defaults["enabled"])
+        block_new_entries = st.checkbox("block_new_entries", value=defaults["block_new_entries"])
+        force_close = st.checkbox("force_close", value=defaults["force_close"])
+        assigned_stack_override = st.number_input("assigned_stack_override", value=float(defaults["assigned_stack_override"]), min_value=0.0, step=1.0)
+        tranche1 = st.number_input("tranche1_pct", value=float(defaults["tranche1_pct"]), min_value=0.0, max_value=1.0, step=0.05)
+        tranche2 = st.number_input("tranche2_pct", value=float(defaults["tranche2_pct"]), min_value=0.0, max_value=1.0, step=0.05)
+        tranche3 = st.number_input("tranche3_pct", value=float(defaults["tranche3_pct"]), min_value=0.0, max_value=1.0, step=0.05)
+        initial_stop_mult = st.number_input(
+            "initial_stop_atr_multiple", value=float(defaults["initial_stop_atr_multiple"]), min_value=0.0, step=0.1
+        )
+        trail_stop_mult = st.number_input(
+            "trail_stop_atr_multiple", value=float(defaults["trail_stop_atr_multiple"]), min_value=0.0, step=0.1
+        )
+        max_stale_hours = st.number_input("max_stale_position_hours", value=float(defaults["max_stale_position_hours"]), min_value=0.0, step=0.5)
+        notes = st.text_input("notes", value=defaults["notes"])
+        submitted = st.form_submit_button("Save pair override", type="primary")
+
+    if not allow_override_mutation:
+        st.info("Pair override mutation disabled. Set DASHBOARD_ALLOW_OVERRIDE_MUTATION=true to enable.")
+        return
+
+    if submitted:
+        payload = {
+            "ticker": selected_pair,
+            "enabled": bool(enabled),
+            "block_new_entries": bool(block_new_entries),
+            "force_close": bool(force_close),
+            "assigned_stack_override": assigned_stack_override if assigned_stack_override > 0 else None,
+            "tranche1_pct": tranche1 if tranche1 > 0 else None,
+            "tranche2_pct": tranche2 if tranche2 > 0 else None,
+            "tranche3_pct": tranche3 if tranche3 > 0 else None,
+            "initial_stop_atr_multiple": initial_stop_mult if initial_stop_mult > 0 else None,
+            "trail_stop_atr_multiple": trail_stop_mult if trail_stop_mult > 0 else None,
+            "max_stale_position_hours": max_stale_hours if max_stale_hours > 0 else None,
+            "notes": notes or None,
+            "updated_at": datetime.utcnow().isoformat(timespec="seconds"),
+        }
+        try:
+            client.table("pair_overrides").upsert(payload, on_conflict="ticker").execute()
+            st.success("Pair override saved.")
+            st.rerun()
+        except Exception as exc:  # pragma: no cover - UI feedback path
+            st.error(f"Failed to save pair override: {exc}")
+
+
+def _pair_override_defaults(row: dict | None) -> dict:
+    base = {
+        "enabled": False,
+        "block_new_entries": False,
+        "force_close": False,
+        "assigned_stack_override": 0.0,
+        "tranche1_pct": 0.5,
+        "tranche2_pct": 0.3,
+        "tranche3_pct": 0.2,
+        "initial_stop_atr_multiple": 2.0,
+        "trail_stop_atr_multiple": 2.0,
+        "max_stale_position_hours": 4.0,
+        "notes": "",
+    }
+    if not row:
+        return base
+    for key in list(base.keys()):
+        if row.get(key) is not None:
+            base[key] = row.get(key)
+    return base
 
 
 if __name__ == "__main__":

@@ -27,6 +27,10 @@ La migrazione `002_runtime_and_paper_tables` aggiunge:
 - `public.runtime_flags`
 - `public.technical_snapshots`
 
+La migrazione `003_pair_overrides` aggiunge:
+
+- `public.pair_overrides`
+
 Tutte le tabelle hanno RLS attiva e nessuna policy pubblica. Per ora e voluto: il bot deve usare una connessione server-side o service role, non chiavi esposte nel client.
 
 ## Advisor attesi

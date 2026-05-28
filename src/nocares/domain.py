@@ -191,3 +191,19 @@ class EquitySnapshot:
     cash_balance: float
     exposure: float
     equity: float
+
+
+@dataclass(frozen=True)
+class PairOverride:
+    ticker: str
+    enabled: bool = False
+    block_new_entries: bool = False
+    force_close: bool = False
+    assigned_stack_override: float | None = None
+    tranche1_pct: float | None = None
+    tranche2_pct: float | None = None
+    tranche3_pct: float | None = None
+    initial_stop_atr_multiple: float | None = None
+    trail_stop_atr_multiple: float | None = None
+    max_stale_position_hours: float | None = None
+    notes: str | None = None

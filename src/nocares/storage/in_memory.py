@@ -9,6 +9,7 @@ from nocares.domain import (
     CoinMetrics,
     EquitySnapshot,
     PaperOrder,
+    PairOverride,
     PositionLegState,
     PositionState,
     TechnicalSnapshot,
@@ -27,6 +28,7 @@ class InMemoryPortfolioRepository(PortfolioRepository):
         self.equity: list[EquitySnapshot] = []
         self.allocations: dict[str, float] = {}
         self.flags: dict[str, bool] = {"paper_trading_enabled": True}
+        self.pair_overrides: dict[str, PairOverride] = {}
 
     def fetch_latest_metrics(self) -> list[CoinMetrics]:
         return list(self.metrics.values())
@@ -88,6 +90,12 @@ class InMemoryPortfolioRepository(PortfolioRepository):
 
     def fetch_runtime_flag(self, flag_name: str, default: bool) -> bool:
         return self.flags.get(flag_name, default)
+
+    def fetch_pair_overrides(self) -> dict[str, PairOverride]:
+        return dict(self.pair_overrides)
+
+    def upsert_pair_override(self, override: PairOverride) -> None:
+        self.pair_overrides[override.ticker] = override
 
 
 def clone_position_as_closed(position: PositionState, realized_pnl_pct: float, close_ts: datetime) -> PositionState:

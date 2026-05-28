@@ -5,10 +5,10 @@ from typing import Protocol
 
 from nocares.domain import (
     AllocationPlan,
-    BotRun,
     CoinMetrics,
     EquitySnapshot,
     PaperOrder,
+    PairOverride,
     PositionLegState,
     PositionState,
     TechnicalSnapshot,
@@ -56,3 +56,9 @@ class PortfolioRepository(Protocol):
 
     def fetch_runtime_flag(self, flag_name: str, default: bool) -> bool:
         """Return runtime boolean flag or default if missing."""
+
+    def fetch_pair_overrides(self) -> dict[str, PairOverride]:
+        """Return pair-level strategy and money management overrides."""
+
+    def upsert_pair_override(self, override: PairOverride) -> None:
+        """Persist one pair override row."""

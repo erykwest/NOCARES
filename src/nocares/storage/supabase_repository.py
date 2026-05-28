@@ -9,6 +9,7 @@ from nocares.domain import (
     CoinMetrics,
     EquitySnapshot,
     PaperOrder,
+    PairOverride,
     PositionLegState,
     PositionState,
     TechnicalSnapshot,
@@ -259,6 +260,50 @@ class SupabasePortfolioRepository(PortfolioRepository):
             return default
         value = rows[0].get("value_bool")
         return bool(default if value is None else value)
+
+    def fetch_pair_overrides(self) -> dict[str, PairOverride]:
+        try:
+            rows = self.client.table("pair_overrides").select("*").execute().data or []
+        except Exception:
+            return {}
+        output: dict[str, PairOverride] = {}
+        for row in rows:
+            ticker = row.get("ticker")
+            if not ticker:
+                continue
+            output[ticker] = PairOverride(
+                ticker=ticker,
+                enabled=bool(row.get("enabled", False)),
+                block_new_entries=bool(row.get("block_new_entries", False)),
+                force_close=bool(row.get("force_close", False)),
+                assigned_stack_override=float(row["assigned_stack_override"]) if row.get("assigned_stack_override") is not None else None,
+                tranche1_pct=float(row["tranche1_pct"]) if row.get("tranche1_pct") is not None else None,
+                tranche2_pct=float(row["tranche2_pct"]) if row.get("tranche2_pct") is not None else None,
+                tranche3_pct=float(row["tranche3_pct"]) if row.get("tranche3_pct") is not None else None,
+                initial_stop_atr_multiple=float(row["initial_stop_atr_multiple"]) if row.get("initial_stop_atr_multiple") is not None else None,
+                trail_stop_atr_multiple=float(row["trail_stop_atr_multiple"]) if row.get("trail_stop_atr_multiple") is not None else None,
+                max_stale_position_hours=float(row["max_stale_position_hours"]) if row.get("max_stale_position_hours") is not None else None,
+                notes=row.get("notes"),
+            )
+        return output
+
+    def upsert_pair_override(self, override: PairOverride) -> None:
+        payload = {
+            "ticker": override.ticker,
+            "enabled": override.enabled,
+            "block_new_entries": override.block_new_entries,
+            "force_close": override.force_close,
+            "assigned_stack_override": override.assigned_stack_override,
+            "tranche1_pct": override.tranche1_pct,
+            "tranche2_pct": override.tranche2_pct,
+            "tranche3_pct": override.tranche3_pct,
+            "initial_stop_atr_multiple": override.initial_stop_atr_multiple,
+            "trail_stop_atr_multiple": override.trail_stop_atr_multiple,
+            "max_stale_position_hours": override.max_stale_position_hours,
+            "notes": override.notes,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.client.table("pair_overrides").upsert(payload, on_conflict="ticker").execute()
 
 
 def _parse_ts(value: str | None) -> datetime:

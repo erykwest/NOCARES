@@ -7,6 +7,7 @@ from typing import Iterable
 from nocares.domain import (
     EquitySnapshot,
     PaperOrder,
+    PairOverride,
     PositionLegState,
     PositionState,
     Regime,
@@ -44,7 +45,9 @@ def execute_paper_cycle(
     allocations: dict[str, float],
     open_positions: list[PositionState],
     config: PaperEngineConfig,
+    pair_overrides: dict[str, PairOverride] | None = None,
 ) -> PaperEngineResult:
+    pair_overrides = pair_overrides or {}
     positions_by_ticker = {row.ticker: row for row in open_positions}
     new_orders: list[PaperOrder] = []
     new_legs: list[PositionLegState] = []
@@ -52,6 +55,7 @@ def execute_paper_cycle(
 
     # Phase 1: update exits for existing positions.
     for ticker, position in positions_by_ticker.items():
+        override = pair_overrides.get(ticker)
         snap = snapshots.get(ticker)
         if not snap:
             next_positions[ticker] = position
@@ -59,24 +63,27 @@ def execute_paper_cycle(
         current_price = snap.price
         current_atr = max(snap.atr or 0.0, 1e-9)
         highest = max(position.highest_price, current_price)
+        trail_multiple = _override_float(override, "trail_stop_atr_multiple", config.trail_stop_atr_multiple)
         trailed_stop = long_trailing_stop(
             highest_price=highest,
             atr=current_atr,
-            multiple=config.trail_stop_atr_multiple,
+            multiple=trail_multiple,
             current_stop=position.stop_price,
         )
 
         age_hours = max((run_ts - position.opened_at).total_seconds() / 3600.0, 0.0)
-        stale_range = enum_value(snap.regime) == Regime.RANGE.value and age_hours >= config.max_stale_position_hours
+        max_age = _override_float(override, "max_stale_position_hours", config.max_stale_position_hours)
+        stale_range = enum_value(snap.regime) == Regime.RANGE.value and age_hours >= max_age
+        force_close = bool(override and override.enabled and override.force_close)
 
-        if current_price <= trailed_stop or stale_range:
+        if force_close or current_price <= trailed_stop or stale_range:
             sell_order, closed = _close_position(
                 run_id=run_id,
                 run_ts=run_ts,
                 ticker=ticker,
                 position=position,
                 price=current_price,
-                reason="stop_hit" if current_price <= trailed_stop else "stale_range",
+                reason="override_force_close" if force_close else ("stop_hit" if current_price <= trailed_stop else "stale_range"),
             )
             new_orders.append(sell_order)
             next_positions[ticker] = closed
@@ -103,15 +110,19 @@ def execute_paper_cycle(
     current_exposure = _compute_exposure(next_positions.values(), snapshots)
 
     for ticker, assigned_stack in allocations.items():
+        override = pair_overrides.get(ticker)
         snap = snapshots.get(ticker)
         if not snap:
+            continue
+        if override and override.enabled and override.block_new_entries and ticker not in positions_by_ticker:
             continue
         if snap.regime != Regime.TREND_UP:
             continue
 
+        tranches = _effective_tranches(config.tranches, override)
         pos = next_positions.get(ticker)
         if not pos or pos.status != "open":
-            notional = assigned_stack * config.tranches[0]
+            notional = assigned_stack * tranches[0]
             if current_exposure + notional > max_exposure or notional <= 0:
                 continue
             order, position, leg = _open_new_position(
@@ -123,6 +134,7 @@ def execute_paper_cycle(
                 price=snap.price,
                 atr=max(snap.atr or 0.0, 1e-9),
                 config=config,
+                override=override,
             )
             current_exposure += notional
             new_orders.append(order)
@@ -134,11 +146,11 @@ def execute_paper_cycle(
         if next_tranche is None:
             continue
         move_atr = (snap.price - pos.average_entry_price) / max(snap.atr or 0.0, 1e-9)
-        min_move = config.min_tranche2_move_atr if next_tranche == 2 else config.min_tranche3_move_atr
+        min_move = _effective_min_move(config, override, next_tranche)
         if move_atr < min_move:
             continue
 
-        notional = assigned_stack * config.tranches[next_tranche - 1]
+        notional = assigned_stack * tranches[next_tranche - 1]
         if current_exposure + notional > max_exposure or notional <= 0:
             continue
 
@@ -152,6 +164,7 @@ def execute_paper_cycle(
             tranche_index=next_tranche,
             atr=max(snap.atr or 0.0, 1e-9),
             config=config,
+            override=override,
         )
         current_exposure += notional
         new_orders.append(order)
@@ -176,9 +189,11 @@ def _open_new_position(
     price: float,
     atr: float,
     config: PaperEngineConfig,
+    override: PairOverride | None,
 ) -> tuple[PaperOrder, PositionState, PositionLegState]:
     quantity = notional / max(price, 1e-9)
-    stop = price - (atr * config.initial_stop_atr_multiple)
+    initial_multiple = _override_float(override, "initial_stop_atr_multiple", config.initial_stop_atr_multiple)
+    stop = price - (atr * initial_multiple)
     order = PaperOrder(
         run_id=run_id,
         dedupe_key=f"{run_id}:{ticker}:buy:1",
@@ -226,6 +241,7 @@ def _add_tranche(
     tranche_index: int,
     atr: float,
     config: PaperEngineConfig,
+    override: PairOverride | None,
 ) -> tuple[PaperOrder, PositionState, PositionLegState]:
     quantity = notional / max(price, 1e-9)
     invested = position.invested_notional + notional
@@ -236,7 +252,7 @@ def _add_tranche(
         stop_candidate = max(stop_candidate, avg_entry)
     stop_candidate = max(
         stop_candidate,
-        price - (atr * config.trail_stop_atr_multiple),
+        price - (atr * _override_float(override, "trail_stop_atr_multiple", config.trail_stop_atr_multiple)),
     )
     updated = PositionState(
         ticker=position.ticker,
@@ -334,3 +350,33 @@ def _compute_exposure(positions: Iterable[PositionState], snapshots: dict[str, T
         price = mark.price if mark else pos.average_entry_price
         total += pos.quantity * price
     return total
+
+
+def _override_float(override: PairOverride | None, field_name: str, fallback: float) -> float:
+    if not override or not override.enabled:
+        return fallback
+    value = getattr(override, field_name, None)
+    if value is None:
+        return fallback
+    return float(value)
+
+
+def _effective_tranches(default_tranches: tuple[float, float, float], override: PairOverride | None) -> tuple[float, float, float]:
+    if not override or not override.enabled:
+        return default_tranches
+    values = (override.tranche1_pct, override.tranche2_pct, override.tranche3_pct)
+    if any(item is None for item in values):
+        return default_tranches
+    a, b, c = float(values[0]), float(values[1]), float(values[2])
+    if min(a, b, c) <= 0:
+        return default_tranches
+    total = a + b + c
+    if total <= 0:
+        return default_tranches
+    return (a / total, b / total, c / total)
+
+
+def _effective_min_move(config: PaperEngineConfig, override: PairOverride | None, tranche_index: int) -> float:
+    if tranche_index == 2:
+        return config.min_tranche2_move_atr
+    return config.min_tranche3_move_atr
