@@ -13,42 +13,96 @@ def main() -> None:
     if not _authenticated():
         st.stop()
 
+    with st.sidebar:
+        st.header("Controls")
+        row_limit = st.slider("Rows per table", min_value=20, max_value=300, value=100, step=20)
+        only_open = st.checkbox("Only open positions", value=True)
+        manual_refresh = st.button("Refresh now")
+        if manual_refresh:
+            st.rerun()
+
     client = _build_client()
     if client is None:
         st.warning("Supabase client not configured. Showing empty state.")
         _render_empty()
         return
 
-    bot_runs = _select_rows(client, "bot_runs", "run_type,bucket_ts,status,message,started_at,ended_at", 30)
-    positions = _select_rows(client, "positions", "ticker,status,tranche_status,average_entry_price,quantity,stop_price,highest_price,realized_pnl_pct,opened_at,closed_at", 50)
-    orders = _select_rows(client, "paper_orders", "ticker,side,notional,quantity,price,reason,created_at,run_id", 100)
-    equity = _select_rows(client, "equity_snapshots", "ts,cash_balance,exposure,equity,run_id", 300)
-    metrics = _select_rows(client, "bot_metrics", "ticker,adx,atr,volume_delta,current_regime,score,updated_at", 50)
-    allocations = _select_rows(client, "portfolio_allocation", "ticker,assigned_stack,is_active,status,reason,updated_at", 50)
+    bot_runs = _select_rows(client, "bot_runs", "run_id,run_type,bucket_ts,status,message,started_at,ended_at", row_limit)
+    positions = _select_rows(client, "positions", "ticker,status,tranche_status,average_entry_price,quantity,stop_price,highest_price,realized_pnl_pct,opened_at,closed_at,assigned_stack", row_limit)
+    orders = _select_rows(client, "paper_orders", "ticker,side,notional,quantity,price,reason,created_at,run_id", row_limit)
+    equity = _select_rows(client, "equity_snapshots", "ts,cash_balance,exposure,equity,run_id", row_limit)
+    metrics = _select_rows(client, "bot_metrics", "ticker,adx,atr,volume_delta,current_regime,score,updated_at", row_limit)
+    allocations = _select_rows(client, "portfolio_allocation", "ticker,assigned_stack,is_active,status,reason,updated_at", row_limit)
+    runtime_flags = _select_rows(client, "runtime_flags", "flag_name,value_bool,updated_at", row_limit)
 
-    _render_summary(equity, positions, orders, bot_runs)
-    st.subheader("Equity Curve")
-    if equity:
-        st.line_chart([row["equity"] for row in equity])
-        st.dataframe(equity, use_container_width=True)
-    else:
-        st.info("No equity snapshots yet.")
+    positions_view = [row for row in positions if row.get("status") == "open"] if only_open else positions
+    runs_sorted = sorted(bot_runs, key=lambda x: x.get("started_at") or "", reverse=True)
+    latest_run = runs_sorted[0] if runs_sorted else None
+    last_status = latest_run.get("status", "n/a") if latest_run else "n/a"
+    status_badge = _status_badge(last_status)
 
-    st.subheader("Open Positions")
-    open_rows = [row for row in positions if row.get("status") == "open"]
-    st.dataframe(open_rows if open_rows else [], use_container_width=True)
+    st.caption(f"Last run status: {status_badge}  |  Updated: {datetime.utcnow().isoformat(timespec='seconds')} UTC")
+    _render_summary(equity, positions_view, orders, runs_sorted)
 
-    st.subheader("Recent Orders")
-    st.dataframe(orders if orders else [], use_container_width=True)
+    overview_tab, positions_tab, orders_tab, metrics_tab, allocation_tab, runs_tab = st.tabs(
+        ["Overview", "Positions", "Orders", "Metrics", "Allocation", "Runs"]
+    )
 
-    st.subheader("Latest Metrics")
-    st.dataframe(metrics if metrics else [], use_container_width=True)
+    with overview_tab:
+        st.subheader("Equity")
+        if equity:
+            st.line_chart([row["equity"] for row in equity])
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Latest Cash", f"{float(equity[-1]['cash_balance']):.2f}")
+            c2.metric("Latest Exposure", f"{float(equity[-1]['exposure']):.2f}")
+            c3.metric("Latest Equity", f"{float(equity[-1]['equity']):.2f}")
+        else:
+            st.info("No equity snapshots yet.")
 
-    st.subheader("Portfolio Allocation")
-    st.dataframe(allocations if allocations else [], use_container_width=True)
+        st.subheader("Runtime Flags")
+        if runtime_flags:
+            st.dataframe(runtime_flags, use_container_width=True)
+        else:
+            st.info("No runtime flags rows available.")
 
-    st.subheader("Run Log")
-    st.dataframe(bot_runs if bot_runs else [], use_container_width=True)
+    with positions_tab:
+        st.subheader("Positions")
+        if positions_view:
+            st.dataframe(positions_view, use_container_width=True)
+        else:
+            st.info("No positions for the selected filter.")
+
+    with orders_tab:
+        st.subheader("Recent Orders")
+        if orders:
+            st.dataframe(orders, use_container_width=True)
+            buy_count = len([x for x in orders if x.get("side") == "buy"])
+            sell_count = len([x for x in orders if x.get("side") == "sell"])
+            st.caption(f"Buys: {buy_count} | Sells: {sell_count}")
+        else:
+            st.info("No paper orders yet.")
+
+    with metrics_tab:
+        st.subheader("Latest Metrics")
+        if metrics:
+            ranking = sorted(metrics, key=lambda x: float(x.get("score") or 0), reverse=True)
+            st.dataframe(ranking, use_container_width=True)
+        else:
+            st.info("No bot metrics yet.")
+
+    with allocation_tab:
+        st.subheader("Portfolio Allocation")
+        if allocations:
+            st.dataframe(allocations, use_container_width=True)
+        else:
+            st.info("No allocation rows available.")
+
+    with runs_tab:
+        st.subheader("Run Log")
+        if runs_sorted:
+            st.dataframe(runs_sorted, use_container_width=True)
+        else:
+            st.info("No run rows yet.")
 
 
 def _authenticated() -> bool:
@@ -110,6 +164,17 @@ def _render_summary(equity: list[dict], positions: list[dict], orders: list[dict
     c2.metric("Open Positions", str(open_positions))
     c3.metric("Orders", str(len(orders)))
     c4.metric("Last Run", str(last_status))
+
+
+def _status_badge(status: str) -> str:
+    normalized = (status or "").lower()
+    if normalized == "success":
+        return "SUCCESS"
+    if normalized == "failed":
+        return "FAILED"
+    if normalized == "skipped":
+        return "SKIPPED"
+    return normalized.upper() if normalized else "N/A"
 
 
 def _render_empty() -> None:
