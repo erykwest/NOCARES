@@ -1,0 +1,42 @@
+[portfolio]
+base_stack = 100.0
+reserve_pct = 0.20
+active_coin_slots = 4
+min_coin_pct = 0.05
+max_coin_pct = 0.30
+emergency_min_pct = 0.05
+emergency_max_pct = 0.20
+rebalance_interval_minutes = 60
+max_stale_position_hours = 4.0
+
+[market]
+primary_timeframe = "5m"
+trigger_timeframe = "30s"
+metrics_write_interval_minutes = 5
+raw_book_window_seconds = 30
+tracked_pairs = [
+  "BTC/USDT",
+  "ETH/USDT",
+  "SOL/USDT",
+  "BNB/USDT",
+  "XRP/USDT",
+  "ADA/USDT",
+  "AVAX/USDT",
+  "DOGE/USDT",
+  "LINK/USDT",
+  "DOT/USDT",
+]
+
+[strategy]
+tranches = [0.50, 0.30, 0.20]
+adx_range_threshold = 20.0
+adx_trend_threshold = 25.0
+initial_stop_atr_multiple = 2.0
+trail_stop_atr_multiple = 2.0
+enable_short = false
+paper_trading = true
+
+[llm]
+review_interval_minutes = 60
+emergency_review_enabled = true
+require_json_output = true
