@@ -11,9 +11,12 @@ max_stale_position_hours = 4.0
 
 [market]
 primary_timeframe = "5m"
-trigger_timeframe = "30s"
+context_timeframes = ["15m", "1h"]
 metrics_write_interval_minutes = 5
-raw_book_window_seconds = 30
+binance_base_url = "https://api.binance.com"
+request_timeout_seconds = 10
+max_retries = 3
+request_pause_ms = 100
 tracked_pairs = [
   "BTC/USDT",
   "ETH/USDT",
@@ -35,8 +38,23 @@ initial_stop_atr_multiple = 2.0
 trail_stop_atr_multiple = 2.0
 enable_short = false
 paper_trading = true
+momentum_lookback = 3
+volume_ratio_window = 10
+min_tranche2_move_atr = 1.0
+min_tranche3_move_atr = 2.0
 
 [llm]
 review_interval_minutes = 60
 emergency_review_enabled = true
 require_json_output = true
+
+[risk]
+max_daily_drawdown_pct = 8.0
+max_trades_per_day = 40
+cooldown_after_stop_minutes = 15
+max_portfolio_exposure_pct = 80.0
+
+[runtime]
+enable_live_trading = false
+dashboard_password_env = "DASHBOARD_PASSWORD"
+default_dry_run = false

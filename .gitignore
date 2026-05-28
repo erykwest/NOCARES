@@ -12,6 +12,7 @@ venv/
 .env
 .env.*
 !.env.example
+.streamlit/secrets.toml
 
 # Private source exports
 Chat/

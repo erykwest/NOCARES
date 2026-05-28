@@ -18,6 +18,15 @@ La migrazione `initial_schema` crea:
 - `public.portfolio_decisions`
 - `public.positions`
 
+La migrazione `002_runtime_and_paper_tables` aggiunge:
+
+- `public.bot_runs`
+- `public.paper_orders`
+- `public.position_legs`
+- `public.equity_snapshots`
+- `public.runtime_flags`
+- `public.technical_snapshots`
+
 Tutte le tabelle hanno RLS attiva e nessuna policy pubblica. Per ora e voluto: il bot deve usare una connessione server-side o service role, non chiavi esposte nel client.
 
 ## Advisor attesi

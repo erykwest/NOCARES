@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -100,3 +101,93 @@ def _clean_enums(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_clean_enums(item) for item in value]
     return value
+
+
+@dataclass(frozen=True)
+class Candle:
+    symbol: str
+    open_time: datetime
+    close_time: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    volume: float
+
+
+@dataclass(frozen=True)
+class TechnicalSnapshot:
+    ticker: str
+    timeframe: str
+    ts: datetime
+    price: float
+    volume: float
+    ema_fast: float | None
+    ema_slow: float | None
+    atr: float | None
+    adx: float | None
+    momentum: float | None
+    volume_ratio: float | None
+    regime: Regime
+    score: float
+
+
+@dataclass(frozen=True)
+class BotRun:
+    run_id: str
+    run_type: str
+    bucket_ts: datetime
+    status: str
+    message: str | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    ended_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class PaperOrder:
+    run_id: str
+    dedupe_key: str
+    ticker: str
+    side: str
+    notional: float
+    quantity: float
+    price: float
+    reason: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PositionState:
+    ticker: str
+    side: str
+    status: str
+    assigned_stack: float
+    tranche_status: str
+    average_entry_price: float
+    quantity: float
+    invested_notional: float
+    stop_price: float
+    highest_price: float
+    opened_at: datetime
+    closed_at: datetime | None = None
+    realized_pnl_pct: float | None = None
+
+
+@dataclass(frozen=True)
+class PositionLegState:
+    ticker: str
+    run_id: str
+    tranche_index: int
+    notional: float
+    quantity: float
+    entry_price: float
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class EquitySnapshot:
+    run_id: str
+    ts: datetime
+    cash_balance: float
+    exposure: float
+    equity: float

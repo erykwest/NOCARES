@@ -19,23 +19,34 @@ Questa base non invia ordini reali. E una struttura per paper trading, simulazio
 - `Chat/NOCARES.md`: export locale originale, non versionato per privacy.
 - `docs/`: requisiti, architettura, policy di rischio e roadmap.
 - `docs/05-supabase-setup.md`: stato del progetto Supabase e note RLS.
+- `instructions/`: playbook operativo per runtime, data, risk, storage, dashboard e test.
 - `config/defaults.toml`: parametri locali di portfolio, mercato e strategia.
 - `supabase/migrations/001_initial_schema.sql`: schema iniziale delle tabelle.
+- `supabase/migrations/002_runtime_and_paper_tables.sql`: tabelle runtime, ordini paper, equity e flag.
 - `src/nocares/`: package Python con moduli di allocazione, strategia, storage e prompt LLM.
+- `dashboard/app.py`: dashboard Streamlit read-only.
+- `.github/workflows/`: scheduler 5m per paper cycle e hourly rebalance.
 - `tests/`: test minimi sui vincoli di allocazione.
 - `data/raw` e `data/processed`: cartelle locali per dati non versionati.
 
 ## Verifica locale
 
 ```powershell
-python -m unittest discover -s tests
+py -m unittest discover -s tests
 ```
 
-Per eseguire la demo di allocazione senza installare il package:
+Per eseguire un ciclo paper in locale:
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-python -m nocares.bot.runner
+py -m nocares.bot.cycle --mode paper --once --dry-run --mock
+```
+
+Per eseguire un rebalance orario deterministico:
+
+```powershell
+$env:PYTHONPATH = "$PWD\src"
+py -m nocares.bot.rebalance --mode deterministic --once --dry-run --mock
 ```
 
 ## Nota di sicurezza
