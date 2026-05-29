@@ -6,6 +6,16 @@ import os
 import streamlit as st
 
 
+def _secret_or_env(name: str) -> str | None:
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
+    if value is None or value == "":
+        return os.getenv(name)
+    return str(value)
+
+
 def main() -> None:
     st.set_page_config(page_title="NOCARES Dashboard", layout="wide")
     st.title("NOCARES - Paper Trading Cockpit")
@@ -150,11 +160,7 @@ def main() -> None:
 
 
 def _authenticated() -> bool:
-    expected = (
-        st.secrets.get("DASHBOARD_PASSWORD")
-        if "DASHBOARD_PASSWORD" in st.secrets
-        else os.getenv("DASHBOARD_PASSWORD")
-    )
+    expected = _secret_or_env("DASHBOARD_PASSWORD")
     if not expected:
         st.warning("Set DASHBOARD_PASSWORD in Streamlit secrets or environment.")
         return False
@@ -172,8 +178,8 @@ def _authenticated() -> bool:
 
 
 def _build_client():
-    url = st.secrets.get("SUPABASE_URL", os.getenv("SUPABASE_URL"))
-    key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
+    url = _secret_or_env("SUPABASE_URL")
+    key = _secret_or_env("SUPABASE_SERVICE_ROLE_KEY")
     if not url or not key:
         return None
     try:
